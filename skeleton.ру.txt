@@ -1,0 +1,74 @@
+import os
+from langchain_community.document_loaders import TextLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.vectorstores import Chroma
+from langchain_community.llms import Ollama
+
+# ========== ПУТЬ К ПАПКЕ С ТЕКСТАМИ ==========
+DOCS_DIR = r"C:\Users\User\...\docs"
+VECTOR_DB_DIR = "vectordb"
+# ==================================================
+
+def load_documents():
+    docs = []
+    if not os.path.exists(DOCS_DIR):
+        raise Exception(f"Папка не найдена: {DOCS_DIR}")
+    for file in os.listdir(DOCS_DIR):
+        if file.endswith(".txt"):
+            loader = TextLoader(os.path.join(DOCS_DIR, file), encoding="utf-8")
+            docs.extend(loader.load())
+    if not docs:
+        raise Exception(f"В папке {DOCS_DIR} нет .txt файлов!")
+    return docs
+
+def split_documents(docs):
+    splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+    return splitter.split_documents(docs)
+
+def get_vectorstore(chunks):
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+    if os.path.exists(VECTOR_DB_DIR):
+        vectordb = Chroma(persist_directory=VECTOR_DB_DIR, embedding_function=embeddings)
+    else:
+        vectordb = Chroma.from_documents(documents=chunks, embedding=embeddings, persist_directory=VECTOR_DB_DIR)
+        vectordb.persist()
+    return vectordb
+
+def ask(query, vectordb, model="llama3.2:3b"):
+    docs = vectordb.similarity_search(query, k=3)
+    context = "\n\n".join([doc.page_content for doc in docs])
+    prompt = f"""Ты — полезный ассистент. Ответь на вопрос, используя ТОЛЬКО следующий контекст.
+Если ответа нет, скажи: "В документах нет информации."
+
+Контекст:
+{context}
+
+Вопрос: {query}
+
+Ответ:"""
+    llm = Ollama(model=model)
+    return llm.invoke(prompt)
+
+# ================= ЗАПУСК =================
+print("📂 Загружаем документы...")
+raw_docs = load_documents()
+print(f"   Найдено файлов: {len(raw_docs)}")
+
+print("✂️ Разбиваем на чанки...")
+chunks = split_documents(raw_docs)
+print(f"   Получено чанков: {len(chunks)}")
+
+print("🧠 Создаём векторную базу...")
+vectordb = get_vectorstore(chunks)
+
+print("✅ Бот готов. Задайте вопрос (для выхода введите /exit).")
+while True:
+    q = input("\n❓ Ваш вопрос: ")
+    if q.lower() in ["/exit", "выход"]:
+        break
+    try:
+        ans = ask(q, vectordb)
+        print(f"🤖 {ans}")
+    except Exception as e:
+        print(f"⚠️ Ошибка: {e}")
